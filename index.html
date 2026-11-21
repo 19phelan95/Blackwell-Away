@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#17150f">
+<link rel="manifest" href="manifest.webmanifest"><title>BlackWell — away sheet</title>
+<style>
+:root { --bg:#17150f; --panel:#221f17; --line:#3a3528; --ink:#ece4cf; --dim:#a39a82; --accent:#d9a441; --danger:#c8463c; --ok:#5fa56a; }
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-text-size-adjust: 100%; }
+button, input, textarea { font: inherit; color: var(--ink); background: #2c281d; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+button { cursor: pointer; } button.on { background: var(--accent); color: #1a1408; border-color: var(--accent); font-weight: 600; } button.danger { border-color: var(--danger); }
+button:disabled { opacity: .4; }
+h1 { font-size: 20px; margin: 0; } h3 { margin: 18px 0 6px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); padding: calc(10px + env(safe-area-inset-top)) 14px 0; }
+header .top { display: flex; gap: 12px; align-items: center; } header img { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 1px solid var(--line); }
+header small { color: var(--dim); }
+nav { display: flex; gap: 6px; margin-top: 10px; } nav button { flex: 1; border-radius: 8px 8px 0 0; border-bottom: 0; }
+main { padding: 6px 14px calc(30px + env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; }
+.stat { display: inline-block; min-width: 76px; padding: 10px; margin: 0 6px 6px 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; text-align: center; }
+.stat b { display: block; font-size: 22px; } .stat span { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.list { display: flex; flex-direction: column; gap: 4px; }
+.item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 10px; background: #1b1912; border: 1px solid var(--line); border-radius: 8px; }
+.item small { color: var(--dim); } .item.pick { cursor: pointer; } .item.pick.on { border-color: var(--accent); background: #2a2413; }
+.item .tick { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); flex: 0 0 auto; text-align: center; line-height: 20px; }
+.item.on .tick { background: var(--accent); color: #1a1408; border-color: var(--accent); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+input[type=text], textarea { width: 100%; } textarea { min-height: 84px; resize: vertical; }
+.dim { color: var(--dim); } .note { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--dim); }
+a.btn { display: block; text-align: center; text-decoration: none; padding: 14px; border-radius: 10px; background: var(--accent); color: #1a1408; font-weight: 700; }
+#status { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); margin-left: auto; white-space: nowrap; }
+</style></head>
+<body>
+<header><div class="top"><img id="face" alt="" hidden><div><h1 id="name">BlackWell</h1><small id="sub"></small></div><span id="status"></span></div>
+  <nav><button id="tabSheet" class="on">Sheet</button><button id="tabPlans">Plans</button></nav></header>
+<main id="main"><p class="dim">Loading…</p></main>
+<script>
+'use strict';
+// BlackWell away page: a read-only snapshot of one character, plus setups ("plans") the player prepares between sessions.
+// Everything the player makes here stays on this phone until they press "Bring to the table".
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } } };
+const key = (location.hash.match(/k=([a-f0-9]{16,64})/) || [])[1] || store.get('bw.away.k');
+let pc = null, plans = [], tab = 'sheet', editing = null, fresh = false;
+
+const b64url = (obj) => { const bytes = new TextEncoder().encode(JSON.stringify(obj)); let bin = ''; for (const b of bytes) bin += String.fromCharCode(b); return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const plansKey = () => `bw.away.plans.${pc.pcId}`;
+const savePlans = () => store.set(plansKey(), JSON.stringify(plans));
+const tableUrl = () => (store.get('bw.away.table') || pc.tableUrl || '').replace(/\/+$/, '');
+
+async function load() {
+  if (!key) { $('main').innerHTML = '<p class="note">This page needs your personal link from the GM. Open that link once and this phone will remember it.</p>'; return; }
+  store.set('bw.away.k', key);
+  const cached = store.get(`bw.away.pc.${key}`);
+  if (cached) { try { pc = JSON.parse(cached); } catch { pc = null; } }
+  try {
+    const res = await fetch(`c/${key}.json`, { cache: 'no-cache' });
+    if (res.ok) { pc = await res.json(); store.set(`bw.away.pc.${key}`, JSON.stringify(pc)); fresh = true; }
+  } catch { /* offline: the saved copy is used */ }
+  if (!pc) { $('main').innerHTML = '<p class="note">Could not load your sheet. Check the link, or try again when you have signal.</p>'; return; }
+  try { plans = JSON.parse(store.get(plansKey()) || '[]'); } catch { plans = []; }
+  render();
+}
+
+function header() {
+  $('name').textContent = pc.name; document.title = `${pc.name} — BlackWell`;
+  $('sub').textContent = `Level ${pc.level ?? '?'} ${pc.class ?? ''}${pc.sheet?.ancestry ? ' · ' + pc.sheet.ancestry : ''}`;
+  if (pc.portrait) { $('face').src = pc.portrait; $('face').hidden = false; $('face').onerror = () => { $('face').hidden = true; }; }
+  $('status').textContent = fresh ? `sheet as of ${pc.stamp || '?'}` : `saved copy · ${pc.stamp || '?'}`;
+  $('tabSheet').className = tab === 'sheet' ? 'on' : ''; $('tabPlans').className = tab === 'plans' ? 'on' : '';
+  $('tabPlans').textContent = plans.length ? `Plans (${plans.length})` : 'Plans';
+}
+
+const stat = (v, label) => `<div class="stat"><b>${esc(v ?? '—')}</b><span>${esc(label)}</span></div>`;
+const rows = (items, fn) => (items?.length ? `<div class="list">${items.map(fn).join('')}</div>` : '<span class="dim">None on file</span>');
+const mod = (n) => { const m = Math.floor((n - 10) / 2); return (m >= 0 ? '+' : '') + m; };
+
+function sheetHtml() {
+  const sh = pc.sheet || {};
+  return `${stat(pc.hpMax, 'Hit points')}${stat(pc.ac, 'Armour')}${stat(pc.speedFt != null ? pc.speedFt + ' ft' : null, 'Speed')}${stat(sh.passivePerception, 'Passive perc.')}${stat(sh.pb != null ? '+' + sh.pb : null, 'Proficiency')}
+    ${sh.abilityScores ? `<h3>Abilities</h3><div>${Object.entries(sh.abilityScores).map(([k, v]) => stat(mod(v), `${k} ${v}`)).join('')}</div>` : ''}
+    <h3>Attacks</h3>${rows(sh.attacks, (a) => `<div class="item"><span>${esc(a.name)}<br><small>${esc(a.notes)}</small></span><span style="text-align:right;white-space:nowrap"><b>${esc(a.toHit)}</b><br><small>${esc(a.damage)}</small></span></div>`)}
+    <h3>Spells${sh.spellcasting?.saveDc && sh.spellcasting.saveDc !== '—' ? ` · save DC ${esc(sh.spellcasting.saveDc)} · attack ${esc(sh.spellcasting.attackBonus)}` : ''}</h3>
+    ${rows(sh.spells, (s) => `<div class="item"><span>${esc(s.name)}<br><small>${esc(s.notes)}</small></span><span style="text-align:right;white-space:nowrap"><small>${esc(s.type)}<br>${esc(s.uses)}</small></span></div>`)}
+    <h3>Features</h3>${rows(sh.features, (f) => `<div class="item"><span>${esc(f)}</span></div>`)}
+    <h3>Inventory</h3>${rows(pc.inventory, (i) => `<div class="item"><span>${esc(i.label)}</span><small>${i.qty > 1 ? '×' + esc(i.qty) : ''}</small></div>`)}
+    ${pc.notes ? `<h3>Notes</h3><p class="dim">${esc(pc.notes)}</p>` : ''}
+    <p class="dim" style="margin-top:18px">A copy of your sheet from the GM's records. It cannot be changed here. Use Plans to try setups for next session.</p>`;
+}
+
+function plansHtml() {
+  if (editing) return editorHtml();
+  return `<p class="dim">A plan is a setup you want to try: which attacks and spells you mean to lean on, what you are carrying, and a note. Plans stay on this phone until you bring one to the table.</p>
+    ${plans.length ? `<div class="list">${plans.map((p, i) => `<div class="item pick" data-open="${i}"><span><b>${esc(p.name)}</b><br><small>${esc([...p.attacks, ...p.spells].join(', ') || 'Nothing selected yet')}</small></span><small>${p.items.length ? p.items.length + ' carried' : ''}</small></div>`).join('')}</div>` : ''}
+    <div class="row"><button class="on" id="newPlan">New plan</button></div>`;
+}
+
+function pickList(title, items, chosen, group, label, sub) {
+  return `<h3>${title}</h3>${items?.length ? `<div class="list">${items.map((it) => { const name = label(it); const on = chosen.includes(name);
+    return `<div class="item pick${on ? ' on' : ''}" data-group="${group}" data-name="${esc(name)}"><span>${esc(name)}${sub(it) ? `<br><small>${esc(sub(it))}</small>` : ''}</span><span class="tick">${on ? '✓' : ''}</span></div>`; }).join('')}</div>` : '<span class="dim">None on file</span>'}`;
+}
+
+const bringLink = (p) => (tableUrl() ? `${tableUrl()}/?pc=${encodeURIComponent(pc.pcId)}#plan=${b64url({ name: p.name, note: p.note, attacks: p.attacks, spells: p.spells, items: p.items, sheetStamp: pc.stamp || '' })}` : '');
+
+function editorHtml() {
+  const p = editing.plan, sh = pc.sheet || {};
+  const link = bringLink(p);
+  return `<div class="row"><button id="back">‹ All plans</button></div>
+    <h3>Name</h3><input type="text" id="planName" maxlength="60" value="${esc(p.name)}">
+    ${pickList('Attacks to lean on', sh.attacks, p.attacks, 'attacks', (a) => a.name, (a) => [a.toHit, a.damage].filter(Boolean).join(' · '))}
+    ${pickList('Spells to have ready', sh.spells, p.spells, 'spells', (s) => s.name, (s) => [s.type, s.uses].filter(Boolean).join(' · '))}
+    ${pickList('Carrying', pc.inventory, p.items, 'items', (i) => i.label, (i) => (i.qty > 1 ? '×' + i.qty : ''))}
+    <h3>Note to the GM</h3><textarea id="planNote" maxlength="500" placeholder="Anything you want to try or ask about next session">${esc(p.note)}</textarea>
+    <div class="row"><button class="on" id="savePlan">Save</button>${editing.index != null ? '<button class="danger" id="deletePlan">Delete</button>' : ''}</div>
+    <h3>Bring to the table</h3>
+    ${link ? `<a class="btn" id="bring" href="${esc(link)}">Bring this plan to the table</a>
+      <p class="dim">Works when this phone is on the GM's Wi-Fi during a session. It opens the table page and hands this plan to the GM. Nothing is sent anywhere until you press it.</p>`
+      : '<p class="note">The table address is not set. Ask the GM for it and enter it below.</p>'}
+    <div class="row"><input type="text" id="tableUrl" placeholder="Table address, e.g. http://192.168.1.180:3100" value="${esc(tableUrl())}"></div>`;
+}
+
+function render() {
+  header();
+  $('main').innerHTML = tab === 'sheet' ? sheetHtml() : plansHtml();
+}
+
+function readEditor() { if (!editing) return; const n = $('planName'), t = $('planNote'); if (n) editing.plan.name = n.value.trim().slice(0, 60) || 'Plan'; if (t) editing.plan.note = t.value.slice(0, 500); }
+
+$('tabSheet').onclick = () => { readEditor(); tab = 'sheet'; render(); };
+$('tabPlans').onclick = () => { tab = 'plans'; render(); };
+$('main').addEventListener('click', (e) => {
+  const t = e.target, pick = t.closest('[data-group]'), open = t.closest('[data-open]');
+  if (t.id === 'newPlan') { editing = { index: null, plan: { name: `Plan ${plans.length + 1}`, note: '', attacks: [], spells: [], items: [] } }; render(); }
+  else if (open) { const i = Number(open.dataset.open); editing = { index: i, plan: JSON.parse(JSON.stringify(plans[i])) }; render(); }
+  else if (pick) { readEditor(); const list = editing.plan[pick.dataset.group], name = pick.dataset.name, at = list.indexOf(name); if (at >= 0) list.splice(at, 1); else list.push(name); render(); }
+  else if (t.id === 'savePlan') { readEditor(); if (editing.index == null) { plans.push(editing.plan); editing.index = plans.length - 1; } else plans[editing.index] = editing.plan; const ok = savePlans(); render(); if (!ok) alert('This phone would not save the plan (private browsing?). It will be lost when you close the page.'); }
+  else if (t.id === 'deletePlan') { if (confirm('Delete this plan?')) { plans.splice(editing.index, 1); savePlans(); editing = null; render(); } }
+  else if (t.id === 'back') { editing = null; render(); }
+  else if (t.id === 'bring') { readEditor(); if (editing.index == null) plans.push(editing.plan); else plans[editing.index] = editing.plan; savePlans(); }   // keep what is being handed over
+});
+$('main').addEventListener('change', (e) => {
+  if (e.target.id === 'tableUrl') { const v = e.target.value.trim(); if (!v || /^https?:\/\/[^\s]+$/.test(v)) { store.set('bw.away.table', v); readEditor(); render(); } else alert('That does not look like an address. It should start with http://'); }
+});
+// Typing a name or note only refreshes the hand-over link. Redrawing the page here would swallow the tap that ended the typing.
+$('main').addEventListener('input', (e) => { if (e.target.id === 'planName' || e.target.id === 'planNote') { readEditor(); const b = $('bring'); if (b) b.href = bringLink(editing.plan); } });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+load();
+</script></body></html>
